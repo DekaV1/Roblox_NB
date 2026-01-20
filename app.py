@@ -2,6 +2,7 @@ import streamlit as st
 import joblib
 import re
 import nltk
+import numpy as np
 
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from nltk.corpus import stopwords
@@ -33,6 +34,11 @@ except LookupError:
 model = joblib.load("bernoulli_nb.pkl")
 tfidf = joblib.load("tfidf_vectorizer.pkl")
 
+# Cek model info
+st.sidebar.markdown("### ℹ️ Info Model")
+st.sidebar.write(f"Model type: {type(model).__name__}")
+st.sidebar.write(f"Classes: {model.classes_ if hasattr(model, 'classes_') else 'N/A'}")
+
 # ===============================
 # PREPROCESSING
 # ===============================
@@ -50,11 +56,9 @@ def preprocess(text):
     text = text.lower()
     text = re.sub(r'[^a-z\s]', '', text)
     
-    # Handle NLTK punkt tokenizer fallback
     try:
         tokens = word_tokenize(text)
     except LookupError:
-        # Fallback to simple whitespace tokenizer if punkt not available
         tokens = text.split()
     
     tokens = [stemmer.stem(w) for w in tokens if w not in stop_words and len(w) > 1]
@@ -67,10 +71,66 @@ label_map = {
 }
 
 # ===============================
+# DIAGNOSTIC FUNCTIONS
+# ===============================
+def analyze_prediction(text):
+    """Analisis lengkap prediksi"""
+    clean_text = preprocess(text)
+    vector = tfidf.transform([clean_text])
+    prediction = model.predict(vector)[0]
+    
+    analysis = {
+        'original': text,
+        'cleaned': clean_text,
+        'prediction': prediction,
+        'label': label_map[prediction],
+        'tokens': clean_text.split()
+    }
+    
+    # Cek probabilitas jika ada
+    if hasattr(model, 'predict_proba'):
+        proba = model.predict_proba(vector)[0]
+        analysis['probabilities'] = {
+            'negatif': proba[0],
+            'netral': proba[1],
+            'positif': proba[2]
+        }
+    
+    # Cek apakah tokens ada di vocabulary
+    vocab_status = {}
+    for token in analysis['tokens']:
+        vocab_status[token] = token in tfidf.vocabulary_
+    analysis['vocab_status'] = vocab_status
+    
+    return analysis
+
+# ===============================
 # UI (FRONT END)
 # ===============================
 st.title("📊 Analisis Sentimen Roblox Indonesia")
 st.write("Model: **Bernoulli Naive Bayes + TF-IDF**")
+
+# Sidebar diagnostics
+with st.sidebar:
+    st.markdown("### 🔍 Diagnosa")
+    
+    if st.button("Test Model Sederhana"):
+        test_cases = [
+            ("jelek", "Harusnya Negatif (0)"),
+            ("buruk", "Harusnya Negatif (0)"),
+            ("payah", "Harusnya Negatif (0)"),
+            ("biasa", "Harusnya Netral (1)"),
+            ("bagus", "Harusnya Positif (2)"),
+            ("baik", "Harusnya Positif (2)")
+        ]
+        
+        for text, expected in test_cases:
+            analysis = analyze_prediction(text)
+            st.write(f"**'{text}'**")
+            st.write(f"  → Prediksi: {analysis['prediction']}")
+            st.write(f"  → Expected: {expected}")
+            st.write(f"  → Cleaned: {analysis['cleaned']}")
+            st.write("---")
 
 text_input = st.text_area(
     "Masukkan komentar Platform X:",
@@ -83,110 +143,46 @@ if st.button("Prediksi Sentimen", type="primary"):
         st.warning("⚠️ Teks tidak boleh kosong")
     else:
         try:
-            # TAMPILKAN PROSES PREPROCESSING
+            # Analisis lengkap
+            analysis = analyze_prediction(text_input)
+            
+            # Tampilkan hasil
             st.markdown("---")
-            st.subheader("📝 Tahapan Preprocessing")
+            st.subheader("🔮 Hasil Analisis")
             
-            # Step 1: Original text
-            st.write("**1. Teks Asli:**")
-            st.code(text_input, language="text")
-            
-            # Step 2: Lowercase
-            text_lower = text_input.lower()
-            st.write("**2. Lowercase:**")
-            st.code(text_lower, language="text")
-            
-            # Step 3: Remove special characters
-            text_clean = re.sub(r'[^a-z\s]', '', text_lower)
-            st.write("**3. Hapus karakter khusus:**")
-            st.code(text_clean, language="text")
-            
-            # Step 4: Tokenization
-            try:
-                tokens = word_tokenize(text_clean)
-                tokenizer_name = "NLTK word_tokenize"
-            except LookupError:
-                tokens = text_clean.split()
-                tokenizer_name = "Simple split()"
-            
-            st.write(f"**4. Tokenization ({tokenizer_name}):**")
-            st.write(tokens)
-            
-            # Step 5: Stopwords removal
-            stopwords_removed = [w for w in tokens if w in stop_words]
-            filtered_tokens = [w for w in tokens if w not in stop_words and len(w) > 1]
-            
-            st.write("**5. Stopwords yang dihapus:**")
-            if stopwords_removed:
-                st.write(stopwords_removed)
+            # Prediction dengan warna
+            if analysis['prediction'] == 0:
+                st.error(f"### {analysis['label']}")
+            elif analysis['prediction'] == 1:
+                st.warning(f"### {analysis['label']}")
             else:
-                st.write("Tidak ada stopwords")
+                st.success(f"### {analysis['label']}")
             
-            st.write("**6. Tokens setelah filter:**")
-            st.write(filtered_tokens)
-            
-            # Step 6: Stemming
-            stemmed_tokens = []
-            for w in filtered_tokens:
-                stemmed = stemmer.stem(w)
-                stemmed_tokens.append(stemmed)
-            
-            st.write("**7. Stemming hasil:**")
-            # Tampilkan mapping sebelum dan sesudah stemming
-            for original, stemmed in zip(filtered_tokens, stemmed_tokens):
-                if original != stemmed:
-                    st.write(f"  {original} → {stemmed}")
-                else:
-                    st.write(f"  {original} (tidak berubah)")
-            
-            # Step 7: Final clean text
-            clean_text = ' '.join(stemmed_tokens)
-            st.write("**8. Teks akhir untuk prediksi:**")
-            st.success(clean_text)
-            
-            # PREDIKSI
-            st.markdown("---")
-            st.subheader("🔮 Hasil Prediksi")
-            
-            # Transform ke TF-IDF
-            vector = tfidf.transform([clean_text])
-            
-            # Get prediction
-            prediction = model.predict(vector)[0]
-            
-            # Show prediction value
-            st.write(f"**Nilai prediksi:** {prediction}")
-            
-            # Display result with color coding
-            if prediction == 0:  # Negatif
-                st.error(f"### Hasil Sentimen: {label_map[prediction]}")
-            elif prediction == 1:  # Netral
-                st.warning(f"### Hasil Sentimen: {label_map[prediction]}")
-            else:  # Positif
-                st.success(f"### Hasil Sentimen: {label_map[prediction]}")
-            
-            # Optional: Show probabilities if available
-            if hasattr(model, 'predict_proba'):
-                probabilities = model.predict_proba(vector)[0]
-                st.markdown("---")
-                st.subheader("📊 Probabilitas")
+            # Detail analysis
+            with st.expander("📊 Detail Analisis Lengkap"):
+                st.write(f"**Teks asli:** {analysis['original']}")
+                st.write(f"**Teks diproses:** {analysis['cleaned']}")
+                st.write(f"**Tokens:** {analysis['tokens']}")
                 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Negatif", f"{probabilities[0]:.1%}")
-                with col2:
-                    st.metric("Netral", f"{probabilities[1]:.1%}")
-                with col3:
-                    st.metric("Positif", f"{probabilities[2]:.1%}")
+                st.write("**Vocabulary Check:**")
+                for token, in_vocab in analysis['vocab_status'].items():
+                    status = "✅ ADA" if in_vocab else "❌ TIDAK ADA"
+                    st.write(f"  - {token}: {status}")
                 
-            # Show processed text summary
-            with st.expander("📋 Ringkasan Proses"):
-                st.write(f"**Teks asli:** {text_input}")
-                st.write(f"**Teks diproses:** {clean_text}")
-                st.write(f"**Jumlah token awal:** {len(tokens)}")
-                st.write(f"**Jumlah token setelah filter:** {len(filtered_tokens)}")
-                st.write(f"**Stopwords dihapus:** {len(stopwords_removed)}")
+                if 'probabilities' in analysis:
+                    st.write("**Probabilitas:**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Negatif", f"{analysis['probabilities']['negatif']:.1%}")
+                    with col2:
+                        st.metric("Netral", f"{analysis['probabilities']['netral']:.1%}")
+                    with col3:
+                        st.metric("Positif", f"{analysis['probabilities']['positif']:.1%}")
+            
+            # Warning jika banyak tokens tidak ada di vocabulary
+            missing_tokens = [t for t, status in analysis['vocab_status'].items() if not status]
+            if missing_tokens:
+                st.warning(f"⚠️ {len(missing_tokens)} token tidak ada dalam vocabulary model: {missing_tokens}")
                 
         except Exception as e:
             st.error(f"Terjadi kesalahan: {str(e)}")
-            st.info("Silakan coba input teks yang berbeda atau refresh halaman")
